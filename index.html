@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HC Web Finder – ULTRA‑SAFE ASCII Map</title>
+  <style>
+    :root { --bg:#000; --fg:#fff; }
+    html,body { height:100%; margin:0; background:var(--bg); color:var(--fg); }
+    body { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace; }
+    header { display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:10px 12px; border-bottom:1px solid #222; }
+    h1 { font-size:16px; margin:0; letter-spacing:.3px; }
+    button { background:#000; color:#fff; border:1px solid #444; border-radius:8px; padding:6px 10px; cursor:pointer; }
+    input { background:#000; color:#fff; border:1px solid #333; border-radius:8px; padding:6px 8px; }
+    #status { margin-left:auto; font-size:12px; opacity:.85; }
+    #ascii { white-space:pre; line-height:1.0; font-size:clamp(7px,1.5vw,12px); padding:6px; overflow:auto; }
+    .coord-info { position:fixed; top:60px; right:10px; background:rgba(0,0,0,0.9); padding:8px; border:1px solid #333; border-radius:4px; font-size:10px; z-index:1000; }
+    .esp-info { position:absolute; background:rgba(0,0,0,0.95); color:#00ff00; border:2px solid #00ff00; border-radius:8px; padding:10px; font-family:monospace; font-size:11px; z-index:1001; box-shadow:0 0 20px rgba(0,255,0,0.3); }
+    .esp-art { color:#ffff00; font-weight:bold; margin-bottom:8px; line-height:1.1; }
+    .esp-data { color:#ffffff; line-height:1.3; }
+    .red-arrow { color: #ff0000; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>HC Web Finder – ULTRA‑SAFE ASCII Map</h1>
+    <button id="start">Start Demo</button>
+    <button id="stop">Stop</button>
+    <button id="regen">Regenerate Roads</button>
+    <button id="zoomOut">− Zoom</button>
+    <button id="zoomIn">+ Zoom</button>
+    <span id="status">booting…</span>
+  </header>
+  <div class="coord-info" id="coordInfo">
+    Coordinate Grid Info<br>
+    Scale: <span id="scaleInfo">3m/cell</span><br>
+    Grid: <span id="gridInfo">140×45</span><br>
+    Center: <span id="centerInfo">55.6761°N, 12.5683°E</span>
+  </div>
+  <div class="esp-info" id="espInfo">
+    <div class="esp-art">
+▄▄▄▄▄ ▄▄▄▄▄ ▄▄▄▄▄   ▄▄▄  ▄▄▄ ▄▄▄<br>
+█▄▄▄▄ █▄▄▄▄ █▄▄▄█   █▄█  █▄█ ▄▄█<br>
+█▄▄▄▄ ▄▄▄▄█ █         █    █  ▄▄█<br>
+▀▀▀▀▀ ▀▀▀▀▀ ▀         ▀    ▀  ▀▀▀
+    </div>
+    <div class="esp-data" id="espData">
+      <div>DEVICE: doompatrol [---%] SAT:--</div>
+      <div>GPS: -.------°N, -.------°E</div>
+      <div>ALT: --m HDOP: -.-- ACC: ±-.--m</div>
+      <div>SPD: -.--m/s HDG: ---°</div>
+      <div>UTC: --:--:-- FIX: 3D-RTK</div>
+      <div>STATUS: TRACKING ACTIVE</div>
+    </div>
+  </div>
+  <div id="ascii">Loading…</div>
+  <script>
+  // ===== ULTRA-HIGH-PRECISION ASCII Map with maximum detail =====
+  let COLS = 140, ROWS = 45;       // Even higher resolution for maximum detail
+  let metersPerCell = 3;           // Ultra-precise scale (3 meters per cell)
+  let center = { lat: 55.6761, lon: 12.5683 };
+  let device = { lat: center.lat, lon: center.lon };
+  let roads = null;                // ASCII base
+  let t=0, timer=null, blink=true; // demo
+
+  const el = document.getElementById('ascii');
+  const setStatus = (s)=> document.getElementById('status').textContent = s;
+
+  function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+  function metersPerDeg(lat){ const mLat=111320, mLon=111320*Math.cos(lat*Math.PI/180); return {mLat,mLon}; }
+  function bbox(){
+    const {mLat,mLon}=metersPerDeg(center.lat);
+    const w=COLS*metersPerCell, h=ROWS*metersPerCell;
+    return { s:center.lat-h/(2*mLat), n:center.lat+h/(2*mLat), w:center.lon-w/(2*mLon), e:center.lon+w/(2*mLon) };
+  }
+  function llToCell(lat,lon,b){
+    const c=Math.round(((lon-b.w)/(b.e-b.w))*(COLS-1));
+    const r=Math.round(((b.n-lat)/(b.n-b.s))*(ROWS-1));
+    return {c,r};
+  }
+
+  function genRoads(){
+    // Ultra-detailed ASCII map with maximum realism and precision
+    const g = Array.from({length:ROWS},()=>Array(COLS).fill(' '));
+    
+    // Enhanced border frame with corner details
+    for(let c=0;c<COLS;c++){ g[0][c]='═'; g[ROWS-1][c]='═'; }
+    for(let r=0;r<ROWS;r++){ g[r][0]='║'; g[r][COLS-1]='║'; }
+    g[0][0]='╔'; g[0][COLS-1]='╗'; g[ROWS-1][0]='╚'; g[ROWS-1][COLS-1]='╝';
+    
+    // Major highways (A1, A2, A3 equivalents)
+    const highways = [5, 12, 22, 32, 39];
+    highways.forEach((r,idx) => {
+      for(let c=1;c<COLS-1;c++) {
+        g[r][c]='═';
+        // Highway lane markers
+        if(c%4===0) g[r][c]='╬';
+        // Highway signs
+        if(c===15+idx*25 && c<COLS-8) {
+          const sign = `A${idx+1}`;
+          for(let i=0;i<sign.length;i++) if(c+i<COLS) g[r-1][c+i] = sign[i];
+        }
+      }
+    });
+    
+    // Major vertical arteries
+    const vHighways = [8, 18, 28, 38, 48, 58, 68, 78, 88, 98, 108, 118, 128];
+    vHighways.forEach((c,idx) => {
+      if(c >= COLS-1) return;
+      for(let r=1;r<ROWS-1;r++) {
+        if(g[r][c] === '═') g[r][c] = '╬';
+        else if(g[r][c] === ' ') g[r][c] = '║';
+        // Street names
+        if(r===8 && c<COLS-6) {
+          const street = `ST${idx+1}`;
+          for(let i=0;i<street.length;i++) if(c-2+i>=0 && c-2+i<COLS) g[r][c-2+i] = street[i];
+        }
+      }
+    });
+    
+    // Dense secondary road network
+    for(let r=2;r<ROWS-2;r+=3){
+      if(highways.includes(r)) continue;
+      for(let c=1;c<COLS-1;c+=2){
+        if(g[r][c]===' ') g[r][c] = '─';
+        else if(g[r][c]==='║') g[r][c] = '╫';
+      }
+    }
+    
+    // Vertical secondary roads
+    for(let c=4;c<COLS-4;c+=6){
+      if(vHighways.includes(c)) continue;
+      for(let r=1;r<ROWS-1;r+=2){
+        if(g[r][c]===' ') g[r][c] = '│';
+        else if(g[r][c]==='─') g[r][c] = '┼';
+        else if(g[r][c]==='═') g[r][c] = '╪';
+      }
+    }
+    
+    // Roundabouts at major intersections
+    const roundabouts = [[12,28], [22,48], [32,68], [22,88]];
+    roundabouts.forEach(([r,c]) => {
+      if(r<ROWS-2 && c<COLS-2){
+        g[r-1][c-1]='╭'; g[r-1][c]='─'; g[r-1][c+1]='╮';
+        g[r][c-1]='│'; g[r][c]='○'; g[r][c+1]='│';
+        g[r+1][c-1]='╰'; g[r+1][c]='─'; g[r+1][c+1]='╯';
+      }
+    });
+    
+    // City districts and neighborhoods
+    const districts = [
+      {name:'DOWNTOWN', r:15, c:45, size:8},
+      {name:'OLDTOWN', r:8, c:25, size:6},
+      {name:'NEWCITY', r:35, c:85, size:10},
+      {name:'HARBOR', r:38, c:15, size:7}
+    ];
+    
+    districts.forEach(dist => {
+      // District center plaza
+      for(let dr=-2;dr<=2;dr++){
+        for(let dc=-3;dc<=3;dc++){
+          const nr=dist.r+dr, nc=dist.c+dc;
+          if(nr>=0 && nr<ROWS && nc>=0 && nc<COLS && g[nr][nc]===' ') {
+            g[nr][nc] = dr===0 && dc===0 ? '★' : '▓';
+          }
+        }
+      }
+      // District name
+      for(let i=0;i<dist.name.length && dist.c-4+i<COLS;i++){
+        if(dist.r-4>=0) g[dist.r-4][dist.c-4+i] = dist.name[i];
+      }
+    });
+    
+    // Dense building clusters
+    const buildingTypes = ['█','▉','▊','▋','▌','▍','▎','▏'];
+    for(let cluster=0;cluster<25;cluster++){
+      const cr = 4 + (cluster%5)*8;
+      const cc = 10 + Math.floor(cluster/5)*25;
+      for(let br=0;br<4;br++){
+        for(let bc=0;bc<6;bc++){
+          const nr=cr+br, nc=cc+bc;
+          if(nr<ROWS-1 && nc<COLS-1 && g[nr][nc]===' '){
+            g[nr][nc] = buildingTypes[Math.floor(Math.random()*buildingTypes.length)];
+          }
+        }
+      }
+    }
+    
+    // Parks and recreational areas
+    const parks = [
+      {r:6, c:60, w:8, h:4, name:'CENTRAL PARK'},
+      {r:25, c:20, w:6, h:3, name:'ROSE GARDEN'},
+      {r:15, c:100, w:10, h:5, name:'RIVERSIDE PARK'},
+      {r:35, c:50, w:7, h:4, name:'CITY SQUARE'}
+    ];
+    
+    parks.forEach(park => {
+      // Park area
+      for(let pr=0;pr<park.h;pr++){
+        for(let pc=0;pc<park.w;pc++){
+          const nr=park.r+pr, nc=park.c+pc;
+          if(nr<ROWS && nc<COLS && g[nr][nc]===' '){
+            g[nr][nc] = (pr+pc)%3===0 ? '♠' : (pr+pc)%3===1 ? '♣' : '░';
+          }
+        }
+      }
+      // Park name
+      for(let i=0;i<park.name.length && park.c+i<COLS;i++){
+        if(park.r-1>=0) g[park.r-1][park.c+i] = park.name[i];
+      }
+    });
+    
+    // Water features - detailed river system
+    const riverPath = [];
+    for(let c=5;c<COLS-5;c++){
+      const r = Math.floor(ROWS*0.75 + 3*Math.sin(c*0.1));
+      if(r>=0 && r<ROWS-2) riverPath.push({r,c});
+    }
+    
+    riverPath.forEach(({r,c}) => {
+      g[r][c]='~'; g[r+1][c]='~';
+      if(Math.random()>0.8) g[r][c]='≈'; // Waves
+    });
+    
+    // Bridges with detailed structure
+    [25, 55, 85, 115].forEach(c => {
+      const bridgeR = riverPath.find(p => Math.abs(p.c-c)<2)?.r || Math.floor(ROWS*0.75);
+      if(c<COLS && bridgeR<ROWS-1){
+        g[bridgeR-1][c-1]='╱'; g[bridgeR-1][c]='┬'; g[bridgeR-1][c+1]='╲';
+        g[bridgeR][c-1]='│'; g[bridgeR][c]='█'; g[bridgeR][c+1]='│';
+        g[bridgeR+1][c-1]='╲'; g[bridgeR+1][c]='┴'; g[bridgeR+1][c+1]='╱';
+        // Bridge name
+        const bridgeName = `BR${Math.floor(c/30)+1}`;
+        for(let i=0;i<bridgeName.length;i++) if(c-2+i<COLS) g[bridgeR-2][c-2+i] = bridgeName[i];
+      }
+    });
+    
+    // Railway network with stations
+    for(let i=0;i<Math.min(ROWS,COLS)-8;i+=1){
+      const r=3+i, c=6+Math.floor(i*1.2);
+      if(r<ROWS && c<COLS && g[r][c]===' ') g[r][c]='╱';
+      // Railway stations
+      if(i%15===0 && r<ROWS-1 && c<COLS-3){
+        g[r][c]='▣'; g[r][c+1]='▣';
+        if(c-5>=0) {
+          const station = 'STN';
+          for(let j=0;j<station.length;j++) g[r-1][c-5+j] = station[j];
+        }
+      }
+    }
+    
+    // Detailed coordinate grid with GPS references
+    for(let r=5;r<ROWS-1;r+=5){
+      for(let c=10;c<COLS-1;c+=10){
+        if(g[r][c]===' ') g[r][c]='⊕';
+        // Mini GPS coordinates
+        if(r%10===5 && c%20===10 && c<COLS-8){
+          const coord = `${c},${r}`;
+          for(let i=0;i<coord.length && c-2+i<COLS;i++){
+            if(g[r-1][c-2+i]===' ') g[r-1][c-2+i] = coord[i];
+          }
+        }
+      }
+    }
+    
+    // Transportation hubs
+    const hubs = [
+      {r:8, c:120, type:'✈', name:'AIRPORT'},
+      {r:35, c:25, type:'🚂', name:'CENTRAL STN'},
+      {r:20, c:75, type:'🚌', name:'BUS HUB'},
+      {r:15, c:35, type:'⚓', name:'PORT'}
+    ];
+    
+    hubs.forEach(hub => {
+      if(hub.r<ROWS && hub.c<COLS){
+        g[hub.r][hub.c] = hub.type;
+        // Hub infrastructure
+        for(let dr=-1;dr<=1;dr++){
+          for(let dc=-2;dc<=2;dc++){
+            const nr=hub.r+dr, nc=hub.c+dc;
+            if(nr>=0 && nr<ROWS && nc>=0 && nc<COLS && g[nr][nc]===' '){
+              g[nr][nc] = '▪';
+            }
+          }
+        }
+        // Hub name
+        for(let i=0;i<hub.name.length && hub.c-3+i<COLS;i++){
+          if(hub.r-2>=0) g[hub.r-2][hub.c-3+i] = hub.name[i];
+        }
+      }
+    });
+    
+    // Traffic elements
+    const trafficLights = [];
+    for(let tl=0;tl<15;tl++){
+      const r = highways[tl%highways.length];
+      const c = 15 + tl*8;
+      if(c<COLS-1) {
+        g[r][c] = '●';
+        trafficLights.push({r,c});
+      }
+    }
+    
+    return g;
+  }
+
+  function render(){
+    if(!roads) roads = genRoads();
+    const b = bbox();
+    const grid = roads.map(row=>row.slice());
+    const P = llToCell(device.lat, device.lon, b);
+    const dc = clamp(P.c,1,COLS-2), dr = clamp(P.r,1,ROWS-2);
+    
+    // Enhanced device marker with directional indicator
+    const prevLat = device.prevLat || device.lat;
+    const prevLon = device.prevLon || device.lon;
+    const deltaLat = device.lat - prevLat;
+    const deltaLon = device.lon - prevLon;
+    
+    // Determine direction arrow
+    let arrow = '◉';
+    if(Math.abs(deltaLat) > 0.00001 || Math.abs(deltaLon) > 0.00001){
+      if(Math.abs(deltaLon) > Math.abs(deltaLat)){
+        arrow = deltaLon > 0 ? '▶' : '◀';
+      } else {
+        arrow = deltaLat > 0 ? '▼' : '▲';
+      }
+    }
+    
+    grid[dr][dc] = `<span class="red-arrow">${arrow}</span>`;
+    
+    // Enhanced device trail (show last few positions)
+    if(device.trail && device.trail.length > 0){
+      device.trail.forEach((pos, i) => {
+        const trailP = llToCell(pos.lat, pos.lon, b);
+        const tc = clamp(trailP.c, 1, COLS-2), tr = clamp(trailP.r, 1, ROWS-2);
+        if(grid[tr][tc] === ' ') {
+          grid[tr][tc] = i < 2 ? '·' : '‧';
+        }
+      });
+    }
+    
+    // Update HTML overlay ESP info box (not drawn in ASCII map)
+    const speed = Math.sqrt(deltaLat*deltaLat + deltaLon*deltaLon) * 100000;
+    const batteryLevels = ['[8%]', '[23%]', '[45%]', '[67%]', '[78%]', '[89%]', '[94%]'];
+    const battery = batteryLevels[Math.floor(t*1.5) % batteryLevels.length];
+    const satellites = 8 + Math.floor(Math.sin(t*0.5)*3);
+    const hdop = (1.2 + Math.sin(t*0.3)*0.8).toFixed(1);
+    const altitude = (45 + Math.sin(t*0.2)*15).toFixed(1);
+    const heading = ((Math.atan2(deltaLon,deltaLat)*180/Math.PI+360)%360).toFixed(0);
+    
+    // Update the HTML overlay with real-time data
+    const espDataElement = document.getElementById('espData');
+    if(espDataElement) {
+      espDataElement.innerHTML = `
+        <div>DEVICE: doompatrol ${battery} SAT:${satellites}</div>
+        <div>GPS: ${device.lat.toFixed(6)}°N, ${device.lon.toFixed(6)}°E</div>
+        <div>ALT: ${altitude}m HDOP: ${hdop} ACC: ±${(2+Math.random()).toFixed(1)}m</div>
+        <div>SPD: ${speed.toFixed(2)}m/s HDG: ${heading}°</div>
+        <div>UTC: ${new Date().toISOString().substr(11,8)} FIX: 3D-RTK</div>
+        <div>STATUS: TRACKING ACTIVE - ULTRA-PRECISE</div>
+      `;
+    }
+    
+    // Update ESP info box position to follow the arrow
+    const espInfoElement = document.getElementById('espInfo');
+    if(espInfoElement) {
+      // Calculate pixel position based on ASCII grid position
+      const fontSize = Math.max(7, Math.min(12, window.innerWidth * 0.015)); // Approximate font size from CSS clamp
+      const charWidth = fontSize * 0.6; // Approximate character width for monospace font
+      const lineHeight = fontSize * 1.0; // Line height from CSS
+      
+      // Calculate pixel coordinates (accounting for padding and margins)
+      const pixelX = dc * charWidth + 6; // 6px is the padding from CSS
+      const pixelY = dr * lineHeight + 60 + 6; // 60px is header height, 6px is padding
+      
+      // Position the box near the arrow but offset so it doesn't cover it
+      const offsetX = 20; // Offset to the right of the arrow
+      const offsetY = -10; // Slightly above the arrow
+      
+      espInfoElement.style.left = `${Math.max(10, Math.min(window.innerWidth - 250, pixelX + offsetX))}px`;
+      espInfoElement.style.top = `${Math.max(80, pixelY + offsetY)}px`;
+    }
+    
+    // Update trail
+    device.prevLat = device.lat;
+    device.prevLon = device.lon;
+    if(!device.trail) device.trail = [];
+    device.trail.unshift({lat: device.lat, lon: device.lon});
+    if(device.trail.length > 8) device.trail.pop(); // Keep last 8 positions
+    
+    // Update coordinate display
+    document.getElementById('scaleInfo').textContent = `${metersPerCell}m/cell`;
+    document.getElementById('gridInfo').textContent = `${COLS}×${ROWS}`;
+    document.getElementById('centerInfo').textContent = `${center.lat.toFixed(4)}°N, ${center.lon.toFixed(4)}°E`;
+    
+    el.innerHTML = grid.map(r=>r.join('')).join('\n');
+  }
+
+  function start(){ if(timer) return; setStatus('demo running'); timer = setInterval(()=>{
+    const {mLat,mLon}=metersPerDeg(center.lat);
+    t += 0.08; blink = !blink; const Rm = 40; // 40 m radius
+    device.lat = center.lat + (Rm*Math.cos(t))/mLat;
+    device.lon = center.lon + (Rm*Math.sin(t))/mLon;
+    render();
+  }, 150); }
+  function stop(){ if(!timer) return; clearInterval(timer); timer=null; setStatus('stopped'); }
+
+  // Controls
+  document.getElementById('start').onclick = start;
+  document.getElementById('stop').onclick = stop;
+  document.getElementById('regen').onclick = ()=>{ roads=null; render(); };
+  document.getElementById('zoomIn').onclick = ()=>{ metersPerCell = Math.max(4, metersPerCell-2); roads=null; render(); };
+  document.getElementById('zoomOut').onclick = ()=>{ metersPerCell = Math.min(40, metersPerCell+2); roads=null; render(); };
+
+  // Boot
+  render();
+  start();
+  </script>
+</body>
+</html>
