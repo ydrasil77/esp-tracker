@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DOOMPATROL - Live GPS ASCII Map</title>
+  <style>
+    :root { --bg:#000; --fg:#fff; }
+    html,body { height:100%; margin:0; background:var(--bg); color:var(--fg); }
+    body { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace; }
+    header { display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:10px 12px; border-bottom:1px solid #222; }
+    h1 { font-size:16px; margin:0; letter-spacing:.3px; }
+    button { background:#000; color:#fff; border:1px solid #444; border-radius:8px; padding:6px 10px; cursor:pointer; }
+    button:hover { background:#333; }
+    input { background:#000; color:#fff; border:1px solid #333; border-radius:8px; padding:6px 8px; }
+    #status { margin-left:auto; font-size:12px; opacity:.85; }
+    #ascii { white-space:pre; line-height:1.0; font-size:clamp(7px,1.5vw,12px); padding:6px; overflow:auto; }
+    .coord-info { position:fixed; top:60px; right:10px; background:rgba(0,0,0,0.9); padding:8px; border:1px solid #333; border-radius:4px; font-size:10px; z-index:1000; }
+    .esp-info { position:absolute; background:rgba(0,0,0,0.95); color:#00ff00; border:2px solid #00ff00; border-radius:8px; padding:10px; font-family:monospace; font-size:11px; z-index:1001; box-shadow:0 0 20px rgba(0,255,0,0.3); }
+    .esp-art { color:#ffff00; font-weight:bold; margin-bottom:8px; line-height:1.1; }
+    .esp-data { color:#ffffff; line-height:1.3; }
+    .red-arrow { color: #ff0000; font-weight: bold; }
+    .connection-panel { position:fixed; top:60px; left:10px; background:rgba(0,0,0,0.9); border:1px solid #333; border-radius:4px; padding:10px; font-size:10px; z-index:1000; }
+    .connected { color: #00ff00; }
+    .disconnected { color: #ff0000; }
+    .searching { color: #ffff00; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🛰️ DOOMPATROL - Live GPS ASCII Map 🛰️</h1>
+    <button id="start">Start Demo</button>
+    <button id="stop">Stop</button>
+    <button id="connectESP">Connect ESP32</button>
+    <button id="connectBLE">Connect Bluetooth</button>
+    <button id="useLocation">Use Browser GPS</button>
+    <button id="regen">Regenerate Roads</button>
+    <button id="zoomOut">− Zoom</button>
+    <button id="zoomIn">+ Zoom</button>
+    <span id="status">Ready for connection...</span>
+  </header>
+  
+  <div class="connection-panel" id="connectionPanel">
+    <strong>📡 Connections:</strong><br>
+    ESP32: <span id="espStatus" class="disconnected">Disconnected</span><br>
+    Bluetooth: <span id="bleStatus" class="disconnected">Disconnected</span><br>
+    Browser GPS: <span id="gpsStatus" class="disconnected">Inactive</span><br>
+    Data Source: <span id="dataSource">None</span>
+  </div>
+  
+  <div class="coord-info" id="coordInfo">
+    Live GPS Tracking<br>
+    Scale: <span id="scaleInfo">3m/cell</span><br>
+    Grid: <span id="gridInfo">140×45</span><br>
+    Location: <span id="centerInfo">Waiting for GPS...</span>
+  </div>
+  
+  <div class="esp-info" id="espInfo">
+    <div class="esp-art">
+▄▄▄▄▄ ▄▄▄▄▄ ▄▄▄▄▄   ▄▄▄  ▄▄▄ ▄▄▄<br>
+█▄▄▄▄ █▄▄▄▄ █▄▄▄█   █▄█  █▄█ ▄▄█<br>
+█▄▄▄▄ ▄▄▄▄█ █         █    █  ▄▄█<br>
+▀▀▀▀▀ ▀▀▀▀▀ ▀         ▀    ▀  ▀▀▀
+    </div>
+    <div class="esp-data" id="espData">
+      <div>DEVICE: doompatrol [---%] SAT:--</div>
+      <div>GPS: -.------°N, -.------°E</div>
+      <div>ALT: --m HDOP: -.-- ACC: ±-.--m</div>
+      <div>SPD: -.--m/s HDG: ---°</div>
+      <div>UTC: --:--:-- FIX: WAITING</div>
+      <div>STATUS: AWAITING CONNECTION</div>
+    </div>
+  </div>
+  
+  <div id="ascii">Loading ASCII Map...</div>
+  
+  <script>
+  // ===== LIVE GPS ASCII Map with ESP32 Integration =====
+  let COLS = 140, ROWS = 45;
+  let metersPerCell = 3;
+  let center = { lat: 55.6761, lon: 12.5683 }; // Default Copenhagen
+  let device = { lat: center.lat, lon: center.lon };
+  let roads = null;
+  let t = 0, timer = null;
+  let esp32IP = null;
+  let bleDevice = null;
+  let bleCharacteristic = null;
+  let watchId = null;
+  let isLiveTracking = false;
+  let dataSource = 'none';
+
+  const el = document.getElementById('ascii');
+  const setStatus = (s) => document.getElementById('status').textContent = s;
+
+  // Connection status elements
+  const espStatus = document.getElementById('espStatus');
+  const bleStatus = document.getElementById('bleStatus');
+  const gpsStatus = document.getElementById('gpsStatus');
+  const dataSourceEl = document.getElementById('dataSource');
+
+  function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+  function metersPerDeg(lat){ const mLat=111320, mLon=111320*Math.cos(lat*Math.PI/180); return {mLat,mLon}; }
+  function bbox(){
+    const {mLat,mLon}=metersPerDeg(center.lat);
+    const w=COLS*metersPerCell, h=ROWS*metersPerCell;
+    return { s:center.lat-h/(2*mLat), n:center.lat+h/(2*mLat), w:center.lon-w/(2*mLon), e:center.lon+w/(2*mLon) };
+  }
+  function llToCell(lat,lon,b){
+    const c=Math.round(((lon-b.w)/(b.e-b.w))*(COLS-1));
+    const r=Math.round(((b.n-lat)/(b.n-b.s))*(ROWS-1));
+    return {c,r};
+  }
+
+  // Generate ASCII roads (same as before)
+  function genRoads(){
+    const g = Array.from({length:ROWS},()=>Array(COLS).fill(' '));
+    
+    // Border frame
+    for(let c=0;c<COLS;c++){ g[0][c]='═'; g[ROWS-1][c]='═'; }
+    for(let r=0;r<ROWS;r++){ g[r][0]='║'; g[r][COLS-1]='║'; }
+    g[0][0]='╔'; g[0][COLS-1]='╗'; g[ROWS-1][0]='╚'; g[ROWS-1][COLS-1]='╝';
+    
+    // Major highways
+    const highways = [5, 12, 22, 32, 39];
+    highways.forEach((r,idx) => {
+      for(let c=1;c<COLS-1;c++) {
+        g[r][c]='═';
+        if(c%4===0) g[r][c]='╬';
+        if(c===15+idx*25 && c<COLS-8) {
+          const sign = `A${idx+1}`;
+          for(let i=0;i<sign.length;i++) if(c+i<COLS) g[r-1][c+i] = sign[i];
+        }
+      }
+    });
+    
+    // Vertical highways
+    const vHighways = [8, 18, 28, 38, 48, 58, 68, 78, 88, 98, 108, 118, 128];
+    vHighways.forEach((c,idx) => {
+      if(c >= COLS-1) return;
+      for(let r=1;r<ROWS-1;r++) {
+        if(g[r][c] === '═') g[r][c] = '╬';
+        else if(g[r][c] === ' ') g[r][c] = '║';
+      }
+    });
+    
+    // Secondary roads
+    for(let r=2;r<ROWS-2;r+=3){
+      if(highways.includes(r)) continue;
+      for(let c=1;c<COLS-1;c+=2){
+        if(g[r][c]===' ') g[r][c] = '─';
+        else if(g[r][c]==='║') g[r][c] = '╫';
+      }
+    }
+    
+    // Buildings
+    const buildingTypes = ['█','▉','▊','▋','▌','▍','▎','▏'];
+    for(let cluster=0;cluster<25;cluster++){
+      const cr = 4 + (cluster%5)*8;
+      const cc = 10 + Math.floor(cluster/5)*25;
+      for(let br=0;br<4;br++){
+        for(let bc=0;bc<6;bc++){
+          const nr=cr+br, nc=cc+bc;
+          if(nr<ROWS-1 && nc<COLS-1 && g[nr][nc]===' '){
+            g[nr][nc] = buildingTypes[Math.floor(Math.random()*buildingTypes.length)];
+          }
+        }
+      }
+    }
+    
+    return g;
+  }
+
+  function render(){
+    if(!roads) roads = genRoads();
+    const b = bbox();
+    const grid = roads.map(row=>row.slice());
+    const P = llToCell(device.lat, device.lon, b);
+    const dc = clamp(P.c,1,COLS-2), dr = clamp(P.r,1,ROWS-2);
+    
+    // Device marker
+    const prevLat = device.prevLat || device.lat;
+    const prevLon = device.prevLon || device.lon;
+    const deltaLat = device.lat - prevLat;
+    const deltaLon = device.lon - prevLon;
+    
+    let arrow = '◉';
+    if(Math.abs(deltaLat) > 0.00001 || Math.abs(deltaLon) > 0.00001){
+      if(Math.abs(deltaLon) > Math.abs(deltaLat)){
+        arrow = deltaLon > 0 ? '▶' : '◀';
+      } else {
+        arrow = deltaLat > 0 ? '▼' : '▲';
+      }
+    }
+    
+    grid[dr][dc] = `<span class="red-arrow">${arrow}</span>`;
+    
+    // Update ESP info box position
+    const espInfoElement = document.getElementById('espInfo');
+    if(espInfoElement) {
+      const fontSize = Math.max(7, Math.min(12, window.innerWidth * 0.015));
+      const charWidth = fontSize * 0.6;
+      const lineHeight = fontSize * 1.0;
+      const pixelX = dc * charWidth + 6;
+      const pixelY = dr * lineHeight + 60 + 6;
+      const offsetX = 20, offsetY = -10;
+      
+      espInfoElement.style.left = `${Math.max(10, Math.min(window.innerWidth - 250, pixelX + offsetX))}px`;
+      espInfoElement.style.top = `${Math.max(80, pixelY + offsetY)}px`;
+    }
+    
+    // Update trail
+    device.prevLat = device.lat;
+    device.prevLon = device.lon;
+    if(!device.trail) device.trail = [];
+    device.trail.unshift({lat: device.lat, lon: device.lon});
+    if(device.trail.length > 8) device.trail.pop();
+    
+    if(device.trail && device.trail.length > 0){
+      device.trail.forEach((pos, i) => {
+        const trailP = llToCell(pos.lat, pos.lon, b);
+        const tc = clamp(trailP.c, 1, COLS-2), tr = clamp(trailP.r, 1, ROWS-2);
+        if(grid[tr][tc] === ' ') {
+          grid[tr][tc] = i < 2 ? '·' : '‧';
+        }
+      });
+    }
+    
+    // Update displays
+    document.getElementById('scaleInfo').textContent = `${metersPerCell}m/cell`;
+    document.getElementById('gridInfo').textContent = `${COLS}×${ROWS}`;
+    document.getElementById('centerInfo').textContent = `${device.lat.toFixed(4)}°N, ${device.lon.toFixed(4)}°E`;
+    
+    el.innerHTML = grid.map(r=>r.join('')).join('\n');
+  }
+
+  // ESP32 Connection
+  async function connectESP32() {
+    const ip = prompt('Enter ESP32 IP address:', '192.168.1.100');
+    if (!ip) return;
+    
+    try {
+      const response = await fetch(`http://${ip}/status`);
+      const data = await response.json();
+      
+      if (data.device === 'doompatrol') {
+        esp32IP = ip;
+        espStatus.textContent = 'Connected';
+        espStatus.className = 'connected';
+        setStatus('ESP32 connected successfully!');
+        startESP32Polling();
+      } else {
+        throw new Error('Wrong device');
+      }
+    } catch (error) {
+      espStatus.textContent = 'Failed';
+      espStatus.className = 'disconnected';
+      setStatus('ESP32 connection failed: ' + error.message);
+    }
+  }
+
+  function startESP32Polling() {
+    if (!esp32IP) return;
+    
+    setInterval(async () => {
+      try {
+        const response = await fetch(`http://${esp32IP}/gps`);
+        const gpsData = await response.json();
+        
+        if (gpsData.fix) {
+          updateDevicePosition(gpsData.lat, gpsData.lon, gpsData.alt, gpsData.speed);
+          dataSource = 'ESP32';
+          dataSourceEl.textContent = 'ESP32';
+          dataSourceEl.className = 'connected';
+        }
+      } catch (error) {
+        console.log('ESP32 polling error:', error);
+      }
+    }, 1000);
+  }
+
+  // Bluetooth Connection
+  async function connectBluetooth() {
+    try {
+      bleStatus.textContent = 'Connecting...';
+      bleStatus.className = 'searching';
+      
+      bleDevice = await navigator.bluetooth.requestDevice({
+        filters: [{ name: 'doompatrol' }],
+        optionalServices: ['12345678-1234-1234-1234-123456789abc']
+      });
+      
+      const server = await bleDevice.gatt.connect();
+      const service = await server.getPrimaryService('12345678-1234-1234-1234-123456789abc');
+      bleCharacteristic = await service.getCharacteristic('87654321-4321-4321-4321-cba987654321');
+      
+      bleStatus.textContent = 'Connected';
+      bleStatus.className = 'connected';
+      setStatus('Bluetooth connected to doompatrol!');
+      
+      // Listen for notifications (if ESP32 sends data)
+      await bleCharacteristic.startNotifications();
+      bleCharacteristic.addEventListener('characteristicvaluechanged', handleBLEData);
+      
+    } catch (error) {
+      bleStatus.textContent = 'Failed';
+      bleStatus.className = 'disconnected';
+      setStatus('Bluetooth connection failed: ' + error.message);
+    }
+  }
+
+  function handleBLEData(event) {
+    const decoder = new TextDecoder();
+    const data = JSON.parse(decoder.decode(event.target.value));
+    
+    if (data.lat && data.lon) {
+      updateDevicePosition(data.lat, data.lon, data.alt || 0, data.speed || 0);
+      dataSource = 'Bluetooth';
+      dataSourceEl.textContent = 'Bluetooth';
+      dataSourceEl.className = 'connected';
+    }
+  }
+
+  // Browser GPS
+  function useBrowserGPS() {
+    if (navigator.geolocation) {
+      gpsStatus.textContent = 'Starting...';
+      gpsStatus.className = 'searching';
+      
+      const options = {
+        enableHighAccuracy: true,
+        timeout: 5000,
+        maximumAge: 0
+      };
+      
+      watchId = navigator.geolocation.watchPosition(
+        position => {
+          const lat = position.coords.latitude;
+          const lon = position.coords.longitude;
+          const alt = position.coords.altitude || 0;
+          const speed = (position.coords.speed || 0) * 3.6; // Convert to km/h
+          
+          updateDevicePosition(lat, lon, alt, speed);
+          gpsStatus.textContent = 'Active';
+          gpsStatus.className = 'connected';
+          dataSource = 'Browser GPS';
+          dataSourceEl.textContent = 'Browser GPS';
+          dataSourceEl.className = 'connected';
+          
+          // Send to ESP32 if connected
+          if (esp32IP) {
+            sendToESP32({ lat, lon, alt, speed });
+          }
+          
+          // Send via Bluetooth if connected
+          if (bleCharacteristic) {
+            sendViaBLE({ lat, lon, alt, speed });
+          }
+        },
+        error => {
+          gpsStatus.textContent = 'Error';
+          gpsStatus.className = 'disconnected';
+          setStatus('GPS Error: ' + error.message);
+        },
+        options
+      );
+    } else {
+      gpsStatus.textContent = 'Not supported';
+      gpsStatus.className = 'disconnected';
+      setStatus('GPS not supported by this browser');
+    }
+  }
+
+  async function sendToESP32(data) {
+    if (!esp32IP) return;
+    try {
+      await fetch(`http://${esp32IP}/gps-update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+    } catch (error) {
+      console.log('Failed to send to ESP32:', error);
+    }
+  }
+
+  async function sendViaBLE(data) {
+    if (!bleCharacteristic) return;
+    try {
+      const jsonString = JSON.stringify(data);
+      const encoder = new TextEncoder();
+      await bleCharacteristic.writeValue(encoder.encode(jsonString));
+    } catch (error) {
+      console.log('Failed to send via BLE:', error);
+    }
+  }
+
+  function updateDevicePosition(lat, lon, alt, speed) {
+    device.lat = lat;
+    device.lon = lon;
+    center.lat = lat; // Center map on device
+    center.lon = lon;
+    
+    // Update ESP info display
+    const espDataElement = document.getElementById('espData');
+    if (espDataElement) {
+      const battery = Math.floor(85 + Math.random() * 10) + '%';
+      const satellites = Math.floor(6 + Math.random() * 6);
+      const hdop = (1.0 + Math.random() * 0.5).toFixed(1);
+      
+      espDataElement.innerHTML = `
+        <div>DEVICE: doompatrol [${battery}] SAT:${satellites}</div>
+        <div>GPS: ${lat.toFixed(6)}°N, ${lon.toFixed(6)}°E</div>
+        <div>ALT: ${alt.toFixed(1)}m HDOP: ${hdop} ACC: ±2.1m</div>
+        <div>SPD: ${speed.toFixed(1)}km/h HDG: ${Math.floor(Math.random()*360)}°</div>
+        <div>UTC: ${new Date().toISOString().substr(11,8)} FIX: 3D-RTK</div>
+        <div>STATUS: LIVE TRACKING - ${dataSource.toUpperCase()}</div>
+      `;
+    }
+    
+    if (!isLiveTracking) {
+      isLiveTracking = true;
+      setStatus('Live GPS tracking active');
+    }
+    
+    render();
+  }
+
+  function start() {
+    if (timer) return;
+    setStatus('Demo mode running');
+    timer = setInterval(() => {
+      if (!isLiveTracking) {
+        // Demo mode - circular motion
+        const {mLat,mLon} = metersPerDeg(center.lat);
+        t += 0.08;
+        const Rm = 40;
+        device.lat = center.lat + (Rm*Math.cos(t))/mLat;
+        device.lon = center.lon + (Rm*Math.sin(t))/mLon;
+        render();
+      }
+    }, 150);
+  }
+
+  function stop() {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+    if (watchId) {
+      navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+      gpsStatus.textContent = 'Stopped';
+      gpsStatus.className = 'disconnected';
+    }
+    isLiveTracking = false;
+    setStatus('Stopped');
+  }
+
+  // Controls
+  document.getElementById('start').onclick = start;
+  document.getElementById('stop').onclick = stop;
+  document.getElementById('connectESP').onclick = connectESP32;
+  document.getElementById('connectBLE').onclick = connectBluetooth;
+  document.getElementById('useLocation').onclick = useBrowserGPS;
+  document.getElementById('regen').onclick = () => { roads = null; render(); };
+  document.getElementById('zoomIn').onclick = () => { metersPerCell = Math.max(1, metersPerCell-1); roads = null; render(); };
+  document.getElementById('zoomOut').onclick = () => { metersPerCell = Math.min(20, metersPerCell+1); roads = null; render(); };
+
+  // Initialize
+  render();
+  setStatus('Ready - Choose connection method');
+  </script>
+</body>
+</html>
